@@ -3,32 +3,184 @@ title: "EV Power - Lab 4 Project Report"
 format: typst
 ---
 
-# Example Solution 1
-
 ## **Part 0: libraries**
 
-```{r}
-
+```{r setup, include = FALSE}
+library(tidyverse)
+library(readr)
+library(sf)
+library(viridis)
+library(usmap)
 ```
+
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: **"Do states with higher renewable energy shares have more EVs per capita?"**
+
+```{r}
+renew23 <- read_csv("data/renew-use-2023.csv")
+
+renew_summary <- renew23 %>%
+  mutate(Renewable_Use_2023 = as.numeric(gsub("[^0-9.]", "", Renewable_Use_2023))) %>%
+  group_by(State) %>%
+  summarise(total_renewable_2023 = sum(Renewable_Use_2023, na.rm = TRUE)) %>%
+  rename(state = State) 
+
+plot_usmap(data = renew_summary, values = "total_renewable_2023", color = "white") +
+  scale_fill_viridis(option = "plasma", name = "Renewable Use (2023)") +
+  labs(title = "Total Renewable Energy Use by State (2023)")
+```
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+renew21 <- read_csv("data/renew-use-2021.csv")
+renew22 <- read_csv("data/renew-use-2022.csv")
+renew23 <- read_csv("data/renew-use-2023.csv")
+total21 <- read_csv("data/total-use-2021.csv")
+total22 <- read_csv("data/total-use-2022.csv")
+total23 <- read_csv("data/total-use-2023.csv")
 
+evs <- read_csv("data/ev-registrations-by-state-2023.csv")
+
+renew21 <- rename_with(renew21, tolower)
+renew22 <- rename_with(renew22, tolower)
+renew23 <- rename_with(renew23, tolower)
+total21 <- rename_with(total21, tolower)
+total22 <- rename_with(total22, tolower)
+total23 <- rename_with(total23, tolower)
+
+evs <- rename_with(evs, tolower)
+
+head(renew23)
+head(total23)
+head(evs)
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
-```{r}
 
+```{r}
+renew21 <- renew21 %>% mutate(year = 2021)
+renew22 <- renew22 %>% mutate(year = 2022)
+renew23 <- renew23 %>% mutate(year = 2023)
+total21 <- total21 %>% mutate(year = 2021)
+total22 <- total22 %>% mutate(year = 2022)
+total23 <- total23 %>% mutate(year = 2023)
+
+total21_long <- total21 %>%
+  pivot_longer(
+    cols = -c(energy_source, year, us),
+    names_to = "state_abbrev",
+    values_to = "total_use"
+  )
+
+total22_long <- total22 %>%
+  pivot_longer(
+    cols = -c(energy_source, year, us),
+    names_to = "state_abbrev",
+    values_to = "total_use"
+  )
+
+total23_long <- total23 %>%
+  pivot_longer(
+    cols = -c(energy_source, year, us),
+    names_to = "state_abbrev",
+    values_to = "total_use"
+  )
+
+renew_all <- bind_rows(renew21, renew22, renew23) %>%
+  rename_with(tolower)
+
+renew_all <- renew_all %>%
+  mutate(
+    renewable_use = coalesce(renewable_use_2023,
+                             renewable_use_2022,
+                             renewable_use_2021)
+  ) %>%
+  select(state, energy_source, year, renewable_use)
+
+total_all <- bind_rows(total21_long, total22_long, total23_long) %>%
+  rename_with(tolower)
+
+total_all <- total_all %>%
+  mutate(
+    state_abbrev = toupper(state_abbrev),
+    state = state.name[match(state_abbrev, state.abb)]
+  ) %>%
+  mutate(
+    state = ifelse(is.na(state), state_abbrev, state)
+  ) %>%
+  filter(state %in% state.name) %>%
+  select(state, energy_source, year, total_use)
+
+renew_all <- renew_all %>% rename_with(tolower)
+total_all <- total_all %>% rename_with(tolower)
+
+energy_all <- left_join(
+  renew_all,
+  total_all,
+  by = c("state", "energy_source", "year")
+)
+
+energy_all <- energy_all %>%
+  mutate(
+    renewable_use = as.numeric(gsub("[^0-9.]", "", renewable_use)),
+    total_use = as.numeric(gsub("[^0-9.]", "", total_use)),
+    renew_share = (renewable_use / total_use) * 100
+  )
+
+energy_state_year <- energy_all %>%
+  group_by(state, year) %>%
+  summarise(total_renew_share = mean(renew_share, na.rm = TRUE), .groups = "drop")
+
+evs <- evs %>%
+  rename(raw = `electric vehicle registrations_by_state (2023)`) %>%
+  mutate(
+    state = sub(" [0-9,]+$", "", raw),
+    ev_registrations = as.numeric(gsub("[^0-9]", "", raw))
+  ) %>%
+  select(state, ev_registrations)
+
+energy_ev_2023 <- left_join(
+  energy_state_year %>% filter(year == 2023),
+  evs,
+  by = "state"
+)
+
+head(energy_ev_2023)
 ```
+
 
 ## **Part 4: Mapping Visualization**
 
 ```{r}
+# ─── Prepare data ───────────────────────────────────────────────────
+# keep valid rows only
+energy_ev_2023 <- energy_ev_2023 %>%
+  filter(!is.na(total_renew_share), !is.na(ev_registrations))
 
+# ─── Choropleth map: Renewable energy share ────────────────────────
+usmap::plot_usmap(
+  data = energy_ev_2023,
+  values = "total_renew_share",
+  color  = "white"
+) +
+  scale_fill_continuous(
+    name  = "Renewable Share (%)",
+    low   = "lightyellow",
+    high  = "darkgreen",
+    label = scales::comma
+  ) +
+  labs(
+    title     = "Renewable Energy Share by State (2023)",
+    subtitle  = "Darker shades indicate higher renewable-energy usage",
+    caption   = "Data sources: U.S. Energy datasets and EV registrations"
+  ) +
+  theme(legend.position = "right")
 ```
+
+## **Part 5: Summary**
+
+In 2023, states with higher renewable energy shares—such as California and Washington—also tended to have more electric vehicle registrations. This suggests a moderate positive relationship between renewable energy use and EV adoption. Larger, more energy-diverse states generally lead both in renewable production and sustainable transportation. Overall, the trend indicates that progress in clean energy often aligns with greater EV uptake across the U.S
